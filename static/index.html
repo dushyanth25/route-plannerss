@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coimbatore-Tiruppur Route Planner with Traffic</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet-routing-machine/3.2.12/leaflet-routing-machine.css" />
+  <style>
+    /* --- your original CSS kept intact --- */
+    body { margin: 0; padding: 0; font-family: 'Roboto', Arial, sans-serif; }
+    #app { display: flex; flex-direction: column; height: 100vh; }
+    #header { background-color: #4285F4; color: white; padding: 10px 20px; display: flex; align-items: center; box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 1000; }
+    #logo { font-size: 20px; font-weight: bold; margin-right: 20px; }
+    #search-container { display: flex; flex-grow: 1; background: white; border-radius: 24px; padding: 5px 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+    #search-container input { flex-grow: 1; border: none; outline: none; padding: 8px; font-size: 16px; }
+    #map-container { flex-grow: 1; position: relative; }
+    #map { height: 100%; width: 100%; }
+    #controls { position: absolute; top: 20px; right: 20px; z-index: 1000; background: white; padding: 10px; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); display: flex; flex-direction: column; gap: 5px; }
+    .search-box { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); position: absolute; top: 80px; left: 20px; z-index: 1000; width: 300px; }
+    .search-box input { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 4px; }
+    .search-box button { background-color: #4285F4; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; width: 100%; }
+    .route-info { position: absolute; bottom: 20px; left: 20px; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); z-index: 1000; max-width: 300px; }
+    .traffic-legend { position: absolute; bottom: 20px; right: 20px; background: white; padding: 10px; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 1000; }
+    .traffic-item { display: flex; align-items: center; margin: 5px 0; }
+    .traffic-color { width: 20px; height: 20px; margin-right: 10px; border-radius: 3px; }
+    .loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(255, 255, 255, 0.9); padding: 20px; border-radius: 8px; z-index: 1001; display: none; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="header">
+      <div id="logo">RoutePlanner</div>
+      <div id="search-container">
+        <input type="text" id="search-box" placeholder="Search locations...">
+      </div>
+    </div>
+
+    <div id="map-container">
+      <div id="map"></div>
+
+      <div class="search-box">
+        <h3>Plan Your Route</h3>
+        <input type="text" id="start-input" placeholder="Starting point">
+        <input type="text" id="end-input" placeholder="Destination">
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+          <button id="find-route">Find Fastest Route</button>
+          <button id="find-alternate" style="background-color: #fbbc05;">Find Best Alternate</button>
+        </div>
+      </div>
+
+      <div id="controls">
+        <button id="locate-me">📍 My Location</button>
+        <button id="traffic-toggle">🚦 Toggle Traffic</button>
+      </div>
+
+      <div class="route-info" id="route-info" style="display: none;">
+        <h3>Route Information</h3>
+        <p id="distance">Distance: -</p>
+        <p id="duration">Duration: -</p>
+        <p id="traffic-info">Traffic: -</p>
+      </div>
+
+      <div class="traffic-legend" id="traffic-legend" style="display: none;">
+        <h4>Traffic Conditions</h4>
+        <div class="traffic-item"><div class="traffic-color" style="background-color: #0a0;"></div><span>Light</span></div>
+        <div class="traffic-item"><div class="traffic-color" style="background-color: #ff0;"></div><span>Moderate</span></div>
+        <div class="traffic-item"><div class="traffic-color" style="background-color: #f80;"></div><span>Heavy</span></div>
+        <div class="traffic-item"><div class="traffic-color" style="background-color: #f00;"></div><span>Severe</span></div>
+      </div>
+
+      <div class="loading" id="loading">
+        <p>Calculating best route...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaflet libraries -->
+  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-routing-machine/3.2.12/leaflet-routing-machine.min.js"></script>
+
+  <!-- Main script -->
+  <script>
+    const map = L.map('map').setView([11.0168, 76.9558], 12);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+
+    let startMarker, endMarker, routeLine;
+    let currentRoute = null;
+    let trafficLayer = null;
+
+    document.getElementById('locate-me').addEventListener('click', () => {
+      map.locate({setView: true, maxZoom: 15});
+    });
+
+    map.on('locationfound', (e) => {
+      if (startMarker) startMarker.remove();
+      startMarker = L.marker(e.latlng).addTo(map).bindPopup("Your Location").openPopup();
+      document.getElementById('start-input').value = `${e.latitude},${e.longitude}`;
+    });
+
+    document.getElementById('find-route').addEventListener('click', findRoute);
+    document.getElementById('find-alternate').addEventListener('click', findBestAlternateRoute);
+    document.getElementById('traffic-toggle').addEventListener('click', toggleTraffic);
+
+    async function findRoute() {
+      const start = document.getElementById('start-input').value;
+      const end = document.getElementById('end-input').value;
+      if (!start || !end) { alert("Please enter both start and end locations."); return; }
+
+      document.getElementById('loading').style.display = 'block';
+      try {
+        const response = await fetch(`/api/route?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`);
+        const data = await response.json();
+        if (data.error) throw new Error(data.error);
+
+        currentRoute = data;
+        displayRoute(data);
+      } catch (error) {
+        alert("Error finding route: " + error.message);
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+      }
+    }
+
+    async function findBestAlternateRoute() {
+      if (!currentRoute) {
+        alert("Find a route first!");
+        return;
+      }
+
+      const delta = 0.005;
+      const [lat, lon] = currentRoute.start_coords;
+      const [endLat, endLon] = currentRoute.end_coords;
+      const newStart = `${lat + delta},${lon + delta}`;
+      const newEnd = `${endLat - delta},${endLon - delta}`;
+
+      document.getElementById('loading').style.display = 'block';
+      try {
+        const response = await fetch(`/api/route?start=${encodeURIComponent(newStart)}&end=${encodeURIComponent(newEnd)}`);
+        const altData = await response.json();
+        if (altData.error) throw new Error(altData.error);
+
+        if (altData.duration < currentRoute.duration) {
+          currentRoute = altData;
+          alert(`Alternate route found! New duration: ${altData.duration.toFixed(1)} mins`);
+        } else {
+          alert("Original route is faster.");
+        }
+        displayRoute(currentRoute);
+      } catch (error) {
+        alert("Error finding alternate: " + error.message);
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+      }
+    }
+
+    function displayRoute(routeData) {
+      if (startMarker) startMarker.remove();
+      if (endMarker) endMarker.remove();
+      if (routeLine) routeLine.remove();
+
+      startMarker = L.marker(routeData.start_coords).addTo(map).bindPopup("Start").openPopup();
+      endMarker = L.marker(routeData.end_coords).addTo(map).bindPopup("End").openPopup();
+      routeLine = L.polyline(routeData.route, { color: 'blue', weight: 5 }).addTo(map);
+
+      map.fitBounds(routeLine.getBounds());
+      document.getElementById('route-info').style.display = 'block';
+      document.getElementById('distance').textContent = `Distance: ${routeData.distance.toFixed(1)} km`;
+      document.getElementById('duration').textContent = `Duration: ${routeData.duration.toFixed(1)} mins`;
+      document.getElementById('traffic-info').textContent = `Traffic: ${routeData.traffic_considered ? 'Considered' : 'Not considered'}`;
+    }
+
+    function toggleTraffic() {
+      const legend = document.getElementById('traffic-legend');
+      legend.style.display = legend.style.display === 'none' ? 'block' : 'none';
+
+      if (legend.style.display === 'block') {
+        showTraffic();
+      } else {
+        hideTraffic();
+      }
+    }
+
+    function showTraffic() {
+      if (trafficLayer) map.removeLayer(trafficLayer);
+      const markers = [];
+      for (let i = 0; i < 50; i++) {
+        const lat = 10.7 + Math.random() * 0.7;
+        const lng = 76.8 + Math.random() * 0.6;
+        const colors = ['#0a0', '#ff0', '#f80', '#f00'];
+        const severity = Math.floor(Math.random() * colors.length);
+        markers.push(L.circleMarker([lat, lng], { radius: 8, fillColor: colors[severity], fillOpacity: 0.7, color: colors[severity] }));
+      }
+      trafficLayer = L.layerGroup(markers).addTo(map);
+    }
+
+    function hideTraffic() {
+      if (trafficLayer) map.removeLayer(trafficLayer);
+    }
+  </script>
+</body>
+</html>
